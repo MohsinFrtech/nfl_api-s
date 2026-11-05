@@ -1,0 +1,17 @@
+{
+  "name": "nfl",
+  "version": "1.0.0",
+  "description": "NFL API",
+  "main": "app.js",
+  "scripts": {
+    "dev": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.40.0",
+    "express": "^5.2.1"
+  },
+  "private": true
+}
