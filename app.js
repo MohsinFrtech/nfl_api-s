@@ -292,8 +292,28 @@ app.get("/api/standings", async (req, res, next) => {
   }
 });
 
+// Pagination is opt-in: with neither ?page nor ?limit the response is unchanged.
+const NEWS_DEFAULT_LIMIT = 10;
+const NEWS_MAX_LIMIT = 50;
+const parsePagination = (query) => {
+  if (query.page === undefined && query.limit === undefined) {
+    return null;
+  }
+  const page = query.page === undefined ? 1 : query.page;
+  const limit = query.limit === undefined ? NEWS_DEFAULT_LIMIT : query.limit;
+  if (!/^\d{1,9}$/.test(page) || Number(page) < 1) {
+    throw new HttpError(400, "invalid_pagination", "page must be a positive whole number");
+  }
+  if (!/^\d{1,9}$/.test(limit) || Number(limit) < 1 || Number(limit) > NEWS_MAX_LIMIT) {
+    throw new HttpError(400, "invalid_pagination", `limit must be a whole number from 1 to ${NEWS_MAX_LIMIT}`);
+  }
+  return {page: Number(page), limit: Number(limit)};
+};
+
 app.get("/api/news", async (req, res, next) => {
   try {
+    // Validate before touching the cache so bad requests never cost an upstream call.
+    const pagination = parsePagination(req.query);
     const {data, status, ttlLeftMs} = await cached("news", NEWS_TTL_MS, async () => {
       // Tag news items with our team ids; news still works if the team list is unavailable.
       let teamsById = new Map();
@@ -305,7 +325,18 @@ app.get("/api/news", async (req, res, next) => {
       }
       return fetchNews(teamsById);
     });
-    res.set(cacheHeaders(status, ttlLeftMs)).json(data);
+    if (!pagination) {
+      res.set(cacheHeaders(status, ttlLeftMs)).json(data);
+      return;
+    }
+    const {page, limit} = pagination;
+    const total = data.items.length;
+    const totalPages = Math.ceil(total / limit);
+    res.set(cacheHeaders(status, ttlLeftMs)).json({
+      ...data,
+      items: data.items.slice((page - 1) * limit, page * limit),
+      pagination: {page, limit, total, totalPages, hasNext: page < totalPages, hasPrev: page > 1},
+    });
   } catch (err) {
     next(err);
   }
