@@ -5,6 +5,7 @@ const {untilAfterNextGameMs} = require("./lib/gameTtl");
 const {currentWeekTtlMs} = require("./lib/scheduleTtl");
 const {currentSeason, parseSeason, parseWeek} = require("./lib/season");
 const {HttpError} = require("./lib/errors");
+const {parsePagination, paginate} = require("./lib/paginate");
 
 const app = express();
 app.use(express.json());
@@ -30,6 +31,10 @@ const PAST_STANDINGS_TTL_MS = 365 * 24 * HOUR_MS; // finished seasons never chan
 const PLAYER_SPLITS_TTL_MS = 24 * HOUR_MS; // a player's splits change at most once a week, after his team plays
 const PAST_PLAYER_SPLITS_TTL_MS = 365 * 24 * HOUR_MS; // finished seasons never change
 const NEWS_TTL_MS = 12 * HOUR_MS; // keep the call count low; raise the refresh rate here if fresher news is needed
+
+// Opt-in paging (?page, ?limit). A roster can reach ~90 players, so its max lets a client fetch it all in one page.
+const NEWS_PAGING = {defaultLimit: 10, maxLimit: 50};
+const PLAYERS_PAGING = {defaultLimit: 20, maxLimit: 100};
 
 // A CDN copy lives only as long as the cache entry has left, so it is never staler than the entry.
 const CDN_MAX_AGE_S = 24 * 60 * 60;
@@ -159,16 +164,21 @@ app.get("/api/teams/:id/players", async (req, res, next) => {
     if (!/^\d{1,10}$/.test(id)) {
       throw new HttpError(400, "invalid_team_id", "team id must be a number");
     }
+    // Validate before touching the cache so bad requests never cost an upstream call.
+    const pagination = parsePagination(req.query, PLAYERS_PAGING);
     const {data: league} = await getTeams();
     const team = league.teams.find((t) => t.id === id);
     if (!team) {
       throw new HttpError(404, "team_not_found", "No NFL team with that id");
     }
     const {data: players, status, ttlLeftMs} = await cached(`roster:${id}`, ROSTER_TTL_MS, () => fetchRoster(id));
-    res.set(cacheHeaders(status, ttlLeftMs)).json({
-      team: {id: team.id, abbreviation: team.abbreviation, displayName: team.displayName, logo: team.logo},
-      players,
-    });
+    const teamInfo = {id: team.id, abbreviation: team.abbreviation, displayName: team.displayName, logo: team.logo};
+    if (!pagination) {
+      res.set(cacheHeaders(status, ttlLeftMs)).json({team: teamInfo, players});
+      return;
+    }
+    const {items, pagination: info} = paginate(players, pagination);
+    res.set(cacheHeaders(status, ttlLeftMs)).json({team: teamInfo, players: items, pagination: info});
   } catch (err) {
     next(err);
   }
@@ -292,28 +302,10 @@ app.get("/api/standings", async (req, res, next) => {
   }
 });
 
-// Pagination is opt-in: with neither ?page nor ?limit the response is unchanged.
-const NEWS_DEFAULT_LIMIT = 10;
-const NEWS_MAX_LIMIT = 50;
-const parsePagination = (query) => {
-  if (query.page === undefined && query.limit === undefined) {
-    return null;
-  }
-  const page = query.page === undefined ? 1 : query.page;
-  const limit = query.limit === undefined ? NEWS_DEFAULT_LIMIT : query.limit;
-  if (!/^\d{1,9}$/.test(page) || Number(page) < 1) {
-    throw new HttpError(400, "invalid_pagination", "page must be a positive whole number");
-  }
-  if (!/^\d{1,9}$/.test(limit) || Number(limit) < 1 || Number(limit) > NEWS_MAX_LIMIT) {
-    throw new HttpError(400, "invalid_pagination", `limit must be a whole number from 1 to ${NEWS_MAX_LIMIT}`);
-  }
-  return {page: Number(page), limit: Number(limit)};
-};
-
 app.get("/api/news", async (req, res, next) => {
   try {
     // Validate before touching the cache so bad requests never cost an upstream call.
-    const pagination = parsePagination(req.query);
+    const pagination = parsePagination(req.query, NEWS_PAGING);
     const {data, status, ttlLeftMs} = await cached("news", NEWS_TTL_MS, async () => {
       // Tag news items with our team ids; news still works if the team list is unavailable.
       let teamsById = new Map();
@@ -329,14 +321,8 @@ app.get("/api/news", async (req, res, next) => {
       res.set(cacheHeaders(status, ttlLeftMs)).json(data);
       return;
     }
-    const {page, limit} = pagination;
-    const total = data.items.length;
-    const totalPages = Math.ceil(total / limit);
-    res.set(cacheHeaders(status, ttlLeftMs)).json({
-      ...data,
-      items: data.items.slice((page - 1) * limit, page * limit),
-      pagination: {page, limit, total, totalPages, hasNext: page < totalPages, hasPrev: page > 1},
-    });
+    const {items, pagination: info} = paginate(data.items, pagination);
+    res.set(cacheHeaders(status, ttlLeftMs)).json({...data, items, pagination: info});
   } catch (err) {
     next(err);
   }
