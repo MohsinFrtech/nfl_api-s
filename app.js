@@ -6,10 +6,12 @@ const {currentWeekTtlMs} = require("./lib/scheduleTtl");
 const {currentSeason, parseSeason, parseWeek} = require("./lib/season");
 const {HttpError} = require("./lib/errors");
 const {parsePagination, paginate} = require("./lib/paginate");
+const {rateLimit} = require("./lib/rateLimit");
 
 const app = express();
 app.disable("x-powered-by"); // don't advertise the framework in every response
 app.use(express.json());
+app.use("/api", rateLimit); // before any cache or upstream work, so blocked clients cost nothing
 
 const HOUR_MS = 60 * 60 * 1000;
 const TEAMS_TTL_MS = 7 * 24 * HOUR_MS; // team list only changes between seasons
