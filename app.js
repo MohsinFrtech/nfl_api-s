@@ -8,6 +8,7 @@ const {HttpError} = require("./lib/errors");
 const {parsePagination, paginate} = require("./lib/paginate");
 
 const app = express();
+app.disable("x-powered-by"); // don't advertise the framework in every response
 app.use(express.json());
 
 const HOUR_MS = 60 * 60 * 1000;
